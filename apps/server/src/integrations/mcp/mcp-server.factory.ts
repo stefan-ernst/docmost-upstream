@@ -11,6 +11,7 @@ import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import SpaceAbilityFactory from '../../core/casl/abilities/space-ability.factory';
 import WorkspaceAbilityFactory from '../../core/casl/abilities/workspace-ability.factory';
 import { PageAccessService } from '../../core/page/page-access/page-access.service';
+import { McpContentUploadService } from './upload/mcp-content-upload.service';
 import { registerPageTools } from './tools/page.tools';
 import { registerSpaceTools } from './tools/space.tools';
 import { registerCommentTools } from './tools/comment.tools';
@@ -30,6 +31,7 @@ export class McpServerFactory {
     private readonly spaceAbility: SpaceAbilityFactory,
     private readonly workspaceAbility: WorkspaceAbilityFactory,
     private readonly pageAccessService: PageAccessService,
+    private readonly contentUploadService: McpContentUploadService,
   ) {}
 
   createServer(user: any, workspace: any): McpServer {
@@ -47,6 +49,7 @@ export class McpServerFactory {
       this.searchService,
       this.spaceAbility,
       this.pageAccessService,
+      this.contentUploadService,
     );
     registerSpaceTools(
       server,

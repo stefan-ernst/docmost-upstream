@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PageService } from '../../../core/page/services/page.service';
@@ -12,6 +12,7 @@ import {
 } from '../../../core/casl/interfaces/space-ability.type';
 import { jsonToMarkdown } from '../../../collaboration/collaboration.util';
 import { User, Workspace } from '@docmost/db/types/entity.types';
+import { McpContentUploadService } from '../upload/mcp-content-upload.service';
 
 function textResult(payload: unknown) {
   return {
@@ -48,6 +49,24 @@ function assertWorkspace(entityWorkspaceId: string, workspaceId: string, label: 
   }
 }
 
+function resolveContent(
+  contentUploadService: McpContentUploadService,
+  workspaceId: string,
+  userId: string,
+  inlineContent: string | undefined,
+  contentUploadId: string | undefined,
+): string | undefined {
+  if (inlineContent !== undefined && contentUploadId !== undefined) {
+    throw new BadRequestException(
+      'Provide either content or contentUploadId, not both',
+    );
+  }
+  if (contentUploadId !== undefined) {
+    return contentUploadService.consume(workspaceId, userId, contentUploadId);
+  }
+  return inlineContent;
+}
+
 export function registerPageTools(
   server: McpServer,
   user: User,
@@ -57,6 +76,7 @@ export function registerPageTools(
   searchService: SearchService,
   spaceAbility: SpaceAbilityFactory,
   pageAccessService: PageAccessService,
+  contentUploadService: McpContentUploadService,
 ) {
   // search_pages: SearchService already scopes results by user's accessible spaces internally
   server.tool(
@@ -139,10 +159,21 @@ export function registerPageTools(
     {
       title: z.string().optional().describe('Page title'),
       spaceId: z.string().describe('Space ID to create in'),
-      content: z.string().optional().describe('Page content in markdown'),
+      content: z
+        .string()
+        .optional()
+        .describe(
+          'Page content in markdown. For large bodies, upload via POST /mcp/uploads and pass contentUploadId instead.',
+        ),
+      contentUploadId: z
+        .string()
+        .optional()
+        .describe(
+          'ID returned by POST /mcp/uploads. Single-use; resolves to the uploaded markdown. Mutually exclusive with content.',
+        ),
       parentPageId: z.string().optional().describe('Parent page ID'),
     },
-    async ({ title, spaceId, content, parentPageId }) => {
+    async ({ title, spaceId, content, contentUploadId, parentPageId }) => {
       try {
         if (parentPageId) {
           // Creating child page: validate edit access on parent
@@ -160,12 +191,20 @@ export function registerPageTools(
           }
         }
 
+        const resolvedContent = resolveContent(
+          contentUploadService,
+          workspace.id,
+          user.id,
+          content,
+          contentUploadId,
+        );
+
         const dto = {
           title,
           spaceId,
           parentPageId,
-          content,
-          format: content ? 'markdown' : undefined,
+          content: resolvedContent,
+          format: resolvedContent ? 'markdown' : undefined,
         };
         const page = await pageService.create(user.id, workspace.id, dto as any);
 
@@ -188,9 +227,20 @@ export function registerPageTools(
     {
       pageId: z.string().describe('The page ID'),
       title: z.string().optional().describe('New title'),
-      content: z.string().optional().describe('New content in markdown'),
+      content: z
+        .string()
+        .optional()
+        .describe(
+          'New content in markdown. For large bodies, upload via POST /mcp/uploads and pass contentUploadId instead.',
+        ),
+      contentUploadId: z
+        .string()
+        .optional()
+        .describe(
+          'ID returned by POST /mcp/uploads. Single-use; resolves to the uploaded markdown. Mutually exclusive with content.',
+        ),
     },
-    async ({ pageId, title, content }) => {
+    async ({ pageId, title, content, contentUploadId }) => {
       try {
         const page = await pageRepo.findById(pageId);
 
@@ -201,12 +251,20 @@ export function registerPageTools(
         assertWorkspace(page.workspaceId, workspace.id, 'Page');
         await pageAccessService.validateCanEdit(page, user);
 
+        const resolvedContent = resolveContent(
+          contentUploadService,
+          workspace.id,
+          user.id,
+          content,
+          contentUploadId,
+        );
+
         const dto = {
           pageId,
           title,
-          content,
-          operation: content ? 'replace' : undefined,
-          format: content ? 'markdown' : undefined,
+          content: resolvedContent,
+          operation: resolvedContent ? 'replace' : undefined,
+          format: resolvedContent ? 'markdown' : undefined,
         };
         const updated = await pageService.update(page, dto as any, user);
 

@@ -27,6 +27,7 @@ describe('Page Tools Authorization', () => {
   let searchService: Record<string, jest.Mock>;
   let spaceAbility: Record<string, jest.Mock>;
   let pageAccessService: Record<string, jest.Mock>;
+  let contentUploadService: Record<string, jest.Mock>;
   let mockAbility: { can: jest.Mock; cannot: jest.Mock };
 
   beforeEach(() => {
@@ -73,6 +74,10 @@ describe('Page Tools Authorization', () => {
       validateCanEdit: jest.fn().mockResolvedValue({ hasRestriction: false }),
     };
 
+    contentUploadService = {
+      consume: jest.fn(),
+    };
+
     registerPageTools(
       mockServer as any,
       mockUser,
@@ -82,6 +87,7 @@ describe('Page Tools Authorization', () => {
       searchService as any,
       spaceAbility as any,
       pageAccessService as any,
+      contentUploadService as any,
     );
   });
 
@@ -182,6 +188,70 @@ describe('Page Tools Authorization', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('not found');
     });
+
+    it('should resolve contentUploadId via uploadService.consume and pass markdown to pageService.create', async () => {
+      contentUploadService.consume.mockReturnValue('# resolved markdown');
+
+      await callTool('create_page', {
+        spaceId: 'space-1',
+        contentUploadId: 'upload-uuid',
+      });
+
+      expect(contentUploadService.consume).toHaveBeenCalledWith(
+        mockWorkspace.id,
+        mockUser.id,
+        'upload-uuid',
+      );
+      expect(pageService.create).toHaveBeenCalledWith(
+        mockUser.id,
+        mockWorkspace.id,
+        expect.objectContaining({
+          content: '# resolved markdown',
+          format: 'markdown',
+        }),
+      );
+    });
+
+    it('should reject when both content and contentUploadId are provided', async () => {
+      const result = await callTool('create_page', {
+        spaceId: 'space-1',
+        content: '# inline',
+        contentUploadId: 'upload-uuid',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('content or contentUploadId');
+      expect(contentUploadService.consume).not.toHaveBeenCalled();
+      expect(pageService.create).not.toHaveBeenCalled();
+    });
+
+    it('should surface upload-not-found errors from uploadService.consume', async () => {
+      contentUploadService.consume.mockImplementation(() => {
+        throw new NotFoundException('Upload not found or expired');
+      });
+
+      const result = await callTool('create_page', {
+        spaceId: 'space-1',
+        contentUploadId: 'expired-upload',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Upload not found');
+      expect(pageService.create).not.toHaveBeenCalled();
+    });
+
+    it('should not consume the upload when permission is denied (single-use upload preserved)', async () => {
+      mockAbility.cannot.mockReturnValue(true);
+
+      const result = await callTool('create_page', {
+        spaceId: 'space-1',
+        contentUploadId: 'upload-uuid',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(contentUploadService.consume).not.toHaveBeenCalled();
+      expect(pageService.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('update_page', () => {
@@ -198,6 +268,56 @@ describe('Page Tools Authorization', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('Permission denied');
+      expect(pageService.update).not.toHaveBeenCalled();
+    });
+
+    it('should resolve contentUploadId via uploadService.consume and pass markdown to pageService.update', async () => {
+      contentUploadService.consume.mockReturnValue('# new body');
+
+      await callTool('update_page', {
+        pageId: 'page-1',
+        contentUploadId: 'upload-uuid',
+      });
+
+      expect(contentUploadService.consume).toHaveBeenCalledWith(
+        mockWorkspace.id,
+        mockUser.id,
+        'upload-uuid',
+      );
+      expect(pageService.update).toHaveBeenCalledWith(
+        mockPage,
+        expect.objectContaining({
+          content: '# new body',
+          operation: 'replace',
+          format: 'markdown',
+        }),
+        mockUser,
+      );
+    });
+
+    it('should reject when both content and contentUploadId are provided', async () => {
+      const result = await callTool('update_page', {
+        pageId: 'page-1',
+        content: '# inline',
+        contentUploadId: 'upload-uuid',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('content or contentUploadId');
+      expect(contentUploadService.consume).not.toHaveBeenCalled();
+      expect(pageService.update).not.toHaveBeenCalled();
+    });
+
+    it('should not consume the upload when permission is denied (single-use upload preserved)', async () => {
+      pageAccessService.validateCanEdit.mockRejectedValue(new ForbiddenException());
+
+      const result = await callTool('update_page', {
+        pageId: 'page-1',
+        contentUploadId: 'upload-uuid',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(contentUploadService.consume).not.toHaveBeenCalled();
       expect(pageService.update).not.toHaveBeenCalled();
     });
   });
