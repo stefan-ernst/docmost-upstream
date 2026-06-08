@@ -18,6 +18,19 @@ import { EnvironmentService } from '../environment/environment.service';
 import { IntegrationOAuthRegistry } from './manifest.registry';
 import { IntegrationOAuthService } from './integration-oauth.service';
 import { IntegrationOAuthTokenRepo } from './integration-oauth-token.repo';
+import {
+  PublicIntegrationResourceManifest,
+  toPublicResourceManifest,
+} from './resource.types';
+
+/**
+ * Explicit 302 + Location + send. NestJS+Fastify's `reply.redirect(url)`
+ * alone gets ignored in some configurations (the response goes out as a 200
+ * with empty body instead) — being explicit avoids the framework guessing.
+ */
+function sendRedirect(reply: FastifyReply, url: string): void {
+  reply.code(302).header('location', url).send();
+}
 
 interface IntegrationListItem {
   id: string;
@@ -29,6 +42,7 @@ interface IntegrationListItem {
   needsReconnect: boolean;
   connectedAt?: string;
   expiresAt?: string;
+  resources: PublicIntegrationResourceManifest[];
 }
 
 // Mounts under the app's global `/api` prefix → `/api/integrations/oauth/*`.
@@ -61,6 +75,7 @@ export class IntegrationOAuthController {
         needsReconnect: t?.needsReconnect ?? false,
         connectedAt: t?.createdAt instanceof Date ? t.createdAt.toISOString() : undefined,
         expiresAt: t?.expiresAt instanceof Date ? t.expiresAt.toISOString() : undefined,
+        resources: (m.resources ?? []).map(toPublicResourceManifest),
       };
     });
   }
@@ -86,7 +101,7 @@ export class IntegrationOAuthController {
       userId: user.id,
       returnTo: safeReturnTo,
     });
-    reply.redirect(url);
+    sendRedirect(reply, url);
   }
 
   /** Provider redirects here after the user approves or denies. */
@@ -102,11 +117,10 @@ export class IntegrationOAuthController {
     if (!this.registry.get(integrationId)) {
       throw new NotFoundException(`Unknown integration: ${integrationId}`);
     }
+    const settingsUrl = `${this.environmentService.getAppUrl()}/settings/account/integrations`;
     if (error) {
       const reason = encodeURIComponent(errorDescription ?? error);
-      reply.redirect(
-        `${this.environmentService.getAppUrl()}/settings/integrations/${integrationId}?error=${reason}`,
-      );
+      sendRedirect(reply, `${settingsUrl}?error=${reason}&integration=${integrationId}`);
       return;
     }
     if (!code || !stateToken) {
@@ -118,15 +132,17 @@ export class IntegrationOAuthController {
         code,
         stateToken,
       });
-      const dest =
-        returnTo ?? `/settings/integrations/${integrationId}?connected=true`;
-      reply.redirect(`${this.environmentService.getAppUrl()}${dest}`);
+      const dest = returnTo
+        ? `${this.environmentService.getAppUrl()}${returnTo}`
+        : `${settingsUrl}?connected=true&integration=${integrationId}`;
+      sendRedirect(reply, dest);
     } catch (err) {
       this.logger.warn(
         `OAuth callback failed for integration=${integrationId}: ${(err as Error).message}`,
       );
-      reply.redirect(
-        `${this.environmentService.getAppUrl()}/settings/integrations/${integrationId}?error=callback_failed`,
+      sendRedirect(
+        reply,
+        `${settingsUrl}?error=callback_failed&integration=${integrationId}`,
       );
     }
   }

@@ -6,6 +6,7 @@ import { IntegrationOAuthTokenRepo } from './integration-oauth-token.repo';
 import { IntegrationOAuthService } from './integration-oauth.service';
 import { IntegrationOAuthClientService } from './integration-oauth-client.service';
 import { IntegrationOAuthController } from './integration-oauth.controller';
+import { IntegrationResourceController } from './integration-resource.controller';
 
 /**
  * Generic third-party-OAuth framework. Consumer modules declare an
@@ -15,7 +16,7 @@ import { IntegrationOAuthController } from './integration-oauth.controller';
 @Global()
 @Module({
   imports: [ConfigModule, EnvironmentModule],
-  controllers: [IntegrationOAuthController],
+  controllers: [IntegrationOAuthController, IntegrationResourceController],
   providers: [
     IntegrationOAuthRegistry,
     IntegrationOAuthTokenRepo,

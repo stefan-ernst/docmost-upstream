@@ -1,3 +1,22 @@
+export interface IntegrationResourceManifest {
+  id: string;
+  title: string;
+  description?: string;
+  renderKind: "item-card" | "table-report";
+  searchTerms: string[];
+  picker?: {
+    placeholder?: string;
+    emptyLabel?: string;
+    searchOnEmpty?: boolean;
+  };
+  menu?: {
+    title: string;
+    description?: string;
+    searchTerms?: string[];
+    icon?: "link" | "table";
+  };
+}
+
 export interface IntegrationListItem {
   id: string;
   name: string;
@@ -8,4 +27,5 @@ export interface IntegrationListItem {
   needsReconnect: boolean;
   connectedAt?: string;
   expiresAt?: string;
+  resources?: IntegrationResourceManifest[];
 }

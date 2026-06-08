@@ -52,6 +52,7 @@ import {
   Columns,
   Column,
   Status,
+  IntegrationEmbed,
 } from "@docmost/editor-ext";
 import {
   randomElement,
@@ -78,6 +79,7 @@ import CodeBlockView from "@/features/editor/components/code-block/code-block-vi
 import DrawioView from "../components/drawio/drawio-view";
 import ExcalidrawView from "@/features/editor/components/excalidraw/excalidraw-view.tsx";
 import EmbedView from "@/features/editor/components/embed/embed-view.tsx";
+import IntegrationEmbedView from "@/features/editor/components/integrations/integration-embed-view.tsx";
 import PdfView from "@/features/editor/components/pdf/pdf-view.tsx";
 import SubpagesView from "@/features/editor/components/subpages/subpages-view.tsx";
 import { common, createLowlight } from "lowlight";
@@ -341,6 +343,9 @@ export const mainExtensions = [
   }),
   Embed.configure({
     view: EmbedView,
+  }),
+  IntegrationEmbed.configure({
+    view: IntegrationEmbedView,
   }),
   TiptapPdf.configure({
     view: PdfView,

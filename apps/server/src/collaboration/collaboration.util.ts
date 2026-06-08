@@ -38,6 +38,7 @@ import {
   Columns,
   Column,
   Status,
+  IntegrationEmbed,
   addUniqueIdsToDoc,
   htmlToMarkdown,
 } from '@docmost/editor-ext';
@@ -101,6 +102,7 @@ export const tiptapExtensions = [
   Columns,
   Column,
   Status,
+  IntegrationEmbed,
 ] as any;
 
 export function jsonToHtml(tiptapJson: any) {

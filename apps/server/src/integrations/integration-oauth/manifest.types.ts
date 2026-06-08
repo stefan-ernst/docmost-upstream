@@ -3,6 +3,8 @@
  * module declares one of these and registers it with IntegrationOAuthRegistry
  * at boot.
  */
+import { IntegrationResourceManifest } from './resource.types';
+
 export interface IntegrationManifest {
   /** Stable identifier — used in URLs, env vars, and the token table. */
   id: string;
@@ -29,6 +31,8 @@ export interface IntegrationManifest {
   /** Env var holding the OAuth client_secret (omit for public clients). */
   clientSecretEnv?: string;
   icon?: string;
+  /** Safe editor resources exposed through the generic integration surface. */
+  resources?: IntegrationResourceManifest[];
 }
 
 /** Resolves IntegrationManifest.baseUrl whether it's a literal or a thunk. */
