@@ -104,6 +104,22 @@ import { countWords } from "alfaaz";
 import AutoJoiner from "@/features/editor/extensions/autojoiner.ts";
 
 const lowlight = createLowlight(common);
+const windshiftBaseUrl = (import.meta.env.VITE_WINDSHIFT_BASE_URL ?? "").replace(/\/+$/, "");
+const windshiftInputRules = windshiftBaseUrl
+  ? [
+      {
+        find: new RegExp(
+          `${windshiftBaseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/workspaces\\/(\\d+)\\/items\\/(\\d+)\\s$`,
+        ),
+        getAttributes: (match: RegExpMatchArray) => ({
+          integrationId: "windshift",
+          resourceId: "item",
+          resourceKey: `id:${Number.parseInt(match[2] ?? "0", 10) || 0}`,
+          renderKind: "item-card",
+        }),
+      },
+    ]
+  : [];
 lowlight.register("mermaid", plaintext);
 lowlight.register("powershell", powershell);
 lowlight.register("abap", abap);
@@ -346,6 +362,7 @@ export const mainExtensions = [
   }),
   IntegrationEmbed.configure({
     view: IntegrationEmbedView,
+    inputRules: windshiftInputRules,
   }),
   TiptapPdf.configure({
     view: PdfView,
