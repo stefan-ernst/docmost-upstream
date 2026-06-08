@@ -86,6 +86,12 @@ const groupedData: DataGroup[] = [
     heading: "Workspace",
     items: [
       { label: "General", icon: IconSettings, path: "/settings/workspace" },
+      {
+        label: "Workspace integrations",
+        icon: IconPlug,
+        path: "/settings/workspace/integrations",
+        role: "admin",
+      },
       { label: "Members", icon: IconUsers, path: "/settings/members" },
       {
         label: "Billing",

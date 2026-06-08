@@ -1,5 +1,9 @@
 import api from "@/lib/api-client";
-import { IntegrationListItem } from "@/features/integrations/types/integration.types";
+import {
+  IntegrationListItem,
+  IntegrationOAuthConnection,
+  SaveIntegrationOAuthConnectionInput,
+} from "@/features/integrations/types/integration.types";
 
 export async function listIntegrations(): Promise<IntegrationListItem[]> {
   const req = await api.get<IntegrationListItem[]>("/integrations/oauth");
@@ -10,6 +14,26 @@ export async function disconnectIntegration(
   integrationId: string,
 ): Promise<void> {
   await api.delete(`/integrations/oauth/${integrationId}/connection`);
+}
+
+export async function listIntegrationConnections(): Promise<
+  IntegrationOAuthConnection[]
+> {
+  const req = await api.get<IntegrationOAuthConnection[]>(
+    "/integrations/oauth/admin/connections",
+  );
+  return req.data;
+}
+
+export async function saveIntegrationConnection(
+  integrationId: string,
+  input: SaveIntegrationOAuthConnectionInput,
+): Promise<IntegrationOAuthConnection> {
+  const req = await api.put<IntegrationOAuthConnection>(
+    `/integrations/oauth/admin/connections/${integrationId}`,
+    input,
+  );
+  return req.data;
 }
 
 /**

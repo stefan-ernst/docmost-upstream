@@ -1,13 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  IntegrationManifest,
-  resolveBaseUrl,
-} from './manifest.types';
+import { IntegrationManifest } from './manifest.types';
 import { IntegrationOAuthRegistry } from './manifest.registry';
 import {
   DecryptedTokens,
   IntegrationOAuthService,
 } from './integration-oauth.service';
+import {
+  IntegrationOAuthConnectionService,
+  ResolvedIntegrationOAuthConnection,
+} from './integration-oauth-connection.service';
 
 export class IntegrationReconnectRequiredError extends Error {
   constructor(integrationId: string) {
@@ -20,6 +21,13 @@ export class IntegrationNotConnectedError extends Error {
   constructor(integrationId: string) {
     super(`Integration not connected: ${integrationId}`);
     this.name = 'IntegrationNotConnectedError';
+  }
+}
+
+export class IntegrationNotConfiguredError extends Error {
+  constructor(integrationId: string) {
+    super(`Integration not configured: ${integrationId}`);
+    this.name = 'IntegrationNotConfiguredError';
   }
 }
 
@@ -40,9 +48,9 @@ interface CacheEntry {
 
 /**
  * Per-user authenticated outbound HTTP. Refreshes the access token on a
- * 401 (once); per-(user, integration) mutex prevents concurrent refreshes
- * racing each other. 30s in-memory LRU on GETs absorbs the herd when a
- * page has many embeds. Returns the parsed JSON body.
+ * 401 (once); per-(workspace, user, integration) mutex prevents concurrent
+ * refreshes racing each other. 30s in-memory LRU on GETs absorbs the herd when
+ * a page has many embeds. Returns the parsed JSON body.
  */
 @Injectable()
 export class IntegrationOAuthClientService {
@@ -56,10 +64,12 @@ export class IntegrationOAuthClientService {
   constructor(
     private readonly registry: IntegrationOAuthRegistry,
     private readonly oauthService: IntegrationOAuthService,
+    private readonly connectionService: IntegrationOAuthConnectionService,
   ) {}
 
   async request<T = unknown>(
     integrationId: string,
+    workspaceId: string,
     userId: string,
     path: string,
     options: RequestOptions = {},
@@ -69,21 +79,46 @@ export class IntegrationOAuthClientService {
     const cacheable = method === 'GET' && !options.skipCache;
 
     const cacheKey = cacheable
-      ? this.buildCacheKey(userId, integrationId, method, path, options.query)
+      ? this.buildCacheKey(
+          workspaceId,
+          userId,
+          integrationId,
+          method,
+          path,
+          options.query,
+        )
       : null;
     if (cacheKey) {
       const hit = this.cacheGet(cacheKey);
       if (hit) return hit as T;
     }
 
-    let tokens = await this.requireTokens(integrationId, userId);
+    let tokens = await this.requireTokens(integrationId, workspaceId, userId);
 
-    let resp = await this.send(manifest, path, method, tokens.accessToken, options);
+    let resp = await this.send(
+      manifest,
+      workspaceId,
+      path,
+      method,
+      tokens.accessToken,
+      options,
+    );
     if (resp.status === 401) {
-      tokens = await this.refreshOnce(integrationId, userId);
-      resp = await this.send(manifest, path, method, tokens.accessToken, options);
+      tokens = await this.refreshOnce(integrationId, workspaceId, userId);
+      resp = await this.send(
+        manifest,
+        workspaceId,
+        path,
+        method,
+        tokens.accessToken,
+        options,
+      );
       if (resp.status === 401) {
-        await this.oauthService.markNeedsReconnect(userId, integrationId);
+        await this.oauthService.markNeedsReconnect(
+          userId,
+          workspaceId,
+          integrationId,
+        );
         throw new IntegrationReconnectRequiredError(integrationId);
       }
     }
@@ -99,7 +134,11 @@ export class IntegrationOAuthClientService {
     }
 
     if (cacheKey) {
-      this.cacheSet(cacheKey, { expiresAt: Date.now() + this.cacheTtlMs, body, status: resp.status });
+      this.cacheSet(cacheKey, {
+        expiresAt: Date.now() + this.cacheTtlMs,
+        body,
+        status: resp.status,
+      });
     }
     return body as T;
   }
@@ -107,20 +146,34 @@ export class IntegrationOAuthClientService {
   /** Convenience wrapper for callers that want a typed JSON response. */
   async get<T = unknown>(
     integrationId: string,
+    workspaceId: string,
     userId: string,
     path: string,
     query?: Record<string, string | number | undefined>,
   ): Promise<T> {
-    return this.request<T>(integrationId, userId, path, { method: 'GET', query });
+    return this.request<T>(integrationId, workspaceId, userId, path, {
+      method: 'GET',
+      query,
+    });
+  }
+
+  async baseUrl(integrationId: string, workspaceId: string): Promise<string> {
+    return (await this.requireConnection(integrationId, workspaceId)).baseUrl;
   }
 
   // ---- internals ----
 
   private async requireTokens(
     integrationId: string,
+    workspaceId: string,
     userId: string,
   ): Promise<DecryptedTokens> {
-    const tokens = await this.oauthService.getTokens(userId, integrationId);
+    await this.requireConnection(integrationId, workspaceId);
+    const tokens = await this.oauthService.getTokens(
+      userId,
+      workspaceId,
+      integrationId,
+    );
     if (!tokens) {
       throw new IntegrationNotConnectedError(integrationId);
     }
@@ -128,27 +181,40 @@ export class IntegrationOAuthClientService {
       throw new IntegrationReconnectRequiredError(integrationId);
     }
     // Proactive refresh saves a guaranteed 401 round-trip.
-    if (tokens.expiresAt && tokens.expiresAt.getTime() <= Date.now() && tokens.refreshToken) {
-      return this.refreshOnce(integrationId, userId);
+    if (
+      tokens.expiresAt &&
+      tokens.expiresAt.getTime() <= Date.now() &&
+      tokens.refreshToken
+    ) {
+      return this.refreshOnce(integrationId, workspaceId, userId);
     }
     return tokens;
   }
 
   private async refreshOnce(
     integrationId: string,
+    workspaceId: string,
     userId: string,
   ): Promise<DecryptedTokens> {
-    const lockKey = `${userId}::${integrationId}`;
+    const lockKey = `${workspaceId}::${userId}::${integrationId}`;
     const existing = this.refreshLocks.get(lockKey);
     if (existing) return existing;
 
     const promise = (async () => {
       try {
-        return await this.oauthService.refreshTokens(userId, integrationId);
+        return await this.oauthService.refreshTokens(
+          userId,
+          workspaceId,
+          integrationId,
+        );
       } catch (err) {
-        await this.oauthService.markNeedsReconnect(userId, integrationId);
+        await this.oauthService.markNeedsReconnect(
+          userId,
+          workspaceId,
+          integrationId,
+        );
         this.logger.warn(
-          `Refresh failed for integration=${integrationId} user=${userId}: ${(err as Error).message}`,
+          `Refresh failed for integration=${integrationId} workspace=${workspaceId} user=${userId}: ${(err as Error).message}`,
         );
         throw new IntegrationReconnectRequiredError(integrationId);
       } finally {
@@ -161,12 +227,14 @@ export class IntegrationOAuthClientService {
 
   private async send(
     manifest: IntegrationManifest,
+    workspaceId: string,
     path: string,
     method: string,
     accessToken: string,
     options: RequestOptions,
   ): Promise<Response> {
-    const url = new URL(`${resolveBaseUrl(manifest)}${path}`);
+    const connection = await this.requireConnection(manifest.id, workspaceId);
+    const url = new URL(`${connection.baseUrl}${path}`);
     if (options.query) {
       for (const [k, v] of Object.entries(options.query)) {
         if (v !== undefined) url.searchParams.set(k, String(v));
@@ -185,6 +253,20 @@ export class IntegrationOAuthClientService {
     return fetch(url.toString(), { method, headers, body });
   }
 
+  private async requireConnection(
+    integrationId: string,
+    workspaceId: string,
+  ): Promise<ResolvedIntegrationOAuthConnection> {
+    try {
+      return await this.connectionService.requireEnabled(
+        workspaceId,
+        integrationId,
+      );
+    } catch {
+      throw new IntegrationNotConfiguredError(integrationId);
+    }
+  }
+
   private async parseBody(resp: Response): Promise<unknown> {
     const ct = resp.headers.get('content-type') ?? '';
     if (ct.includes('application/json')) {
@@ -194,6 +276,7 @@ export class IntegrationOAuthClientService {
   }
 
   private buildCacheKey(
+    workspaceId: string,
     userId: string,
     integrationId: string,
     method: string,
@@ -207,7 +290,7 @@ export class IntegrationOAuthClientService {
           .map(([k, v]) => `${k}=${String(v)}`)
           .join('&')
       : '';
-    return `${userId}::${integrationId}::${method}::${path}?${q}`;
+    return `${workspaceId}::${userId}::${integrationId}::${method}::${path}?${q}`;
   }
 
   private cacheGet(key: string): unknown | null {

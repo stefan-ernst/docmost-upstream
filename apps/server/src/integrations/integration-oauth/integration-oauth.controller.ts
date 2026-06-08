@@ -13,11 +13,13 @@ import {
 import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
-import { User } from '@docmost/db/types/entity.types';
+import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
+import { User, Workspace } from '@docmost/db/types/entity.types';
 import { EnvironmentService } from '../environment/environment.service';
 import { IntegrationOAuthRegistry } from './manifest.registry';
 import { IntegrationOAuthService } from './integration-oauth.service';
 import { IntegrationOAuthTokenRepo } from './integration-oauth-token.repo';
+import { IntegrationOAuthConnectionService } from './integration-oauth-connection.service';
 import {
   PublicIntegrationResourceManifest,
   toPublicResourceManifest,
@@ -55,35 +57,57 @@ export class IntegrationOAuthController {
     private readonly registry: IntegrationOAuthRegistry,
     private readonly oauthService: IntegrationOAuthService,
     private readonly tokenRepo: IntegrationOAuthTokenRepo,
+    private readonly connectionService: IntegrationOAuthConnectionService,
     private readonly environmentService: EnvironmentService,
   ) {}
 
   /** Manifests + per-user connection state for the settings UI. */
   @Get()
-  async list(@AuthUser() user: User): Promise<IntegrationListItem[]> {
-    const tokens = await this.tokenRepo.listByUser(user.id);
-    const tokensByIntegration = new Map(tokens.map((t) => [t.integrationId, t]));
-    return this.registry.list().map((m) => {
-      const t = tokensByIntegration.get(m.id);
-      return {
-        id: m.id,
-        name: m.name,
-        description: m.description,
-        icon: m.icon,
-        scopes: m.scopes,
-        connected: !!t,
-        needsReconnect: t?.needsReconnect ?? false,
-        connectedAt: t?.createdAt instanceof Date ? t.createdAt.toISOString() : undefined,
-        expiresAt: t?.expiresAt instanceof Date ? t.expiresAt.toISOString() : undefined,
-        resources: (m.resources ?? []).map(toPublicResourceManifest),
-      };
-    });
+  async list(
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ): Promise<IntegrationListItem[]> {
+    const tokens = await this.tokenRepo.listByUserWorkspace(
+      user.id,
+      workspace.id,
+    );
+    const configured = await this.connectionService.listConfigured(
+      workspace.id,
+    );
+    const tokensByIntegration = new Map(
+      tokens.map((t) => [t.integrationId, t]),
+    );
+    return this.registry
+      .list()
+      .filter((m) => configured.has(m.id))
+      .map((m) => {
+        const t = tokensByIntegration.get(m.id);
+        return {
+          id: m.id,
+          name: m.name,
+          description: m.description,
+          icon: m.icon,
+          scopes: m.scopes,
+          connected: !!t,
+          needsReconnect: t?.needsReconnect ?? false,
+          connectedAt:
+            t?.createdAt instanceof Date
+              ? t.createdAt.toISOString()
+              : undefined,
+          expiresAt:
+            t?.expiresAt instanceof Date
+              ? t.expiresAt.toISOString()
+              : undefined,
+          resources: (m.resources ?? []).map(toPublicResourceManifest),
+        };
+      });
   }
 
   /** Starts the OAuth flow. */
   @Get(':integrationId/authorize')
   async authorize(
     @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
     @Param('integrationId') integrationId: string,
     @Query('returnTo') returnTo: string | undefined,
     @Res() reply: FastifyReply,
@@ -98,6 +122,7 @@ export class IntegrationOAuthController {
         : undefined;
     const { url } = await this.oauthService.startAuthorize({
       integrationId,
+      workspaceId: workspace.id,
       userId: user.id,
       returnTo: safeReturnTo,
     });
@@ -120,7 +145,10 @@ export class IntegrationOAuthController {
     const settingsUrl = `${this.environmentService.getAppUrl()}/settings/account/integrations`;
     if (error) {
       const reason = encodeURIComponent(errorDescription ?? error);
-      sendRedirect(reply, `${settingsUrl}?error=${reason}&integration=${integrationId}`);
+      sendRedirect(
+        reply,
+        `${settingsUrl}?error=${reason}&integration=${integrationId}`,
+      );
       return;
     }
     if (!code || !stateToken) {
@@ -147,16 +175,17 @@ export class IntegrationOAuthController {
     }
   }
 
-  /** Revoke the user's connection — deletes the token row. */
+  /** Revoke the user's workspace-scoped connection — deletes the token row. */
   @Delete(':integrationId/connection')
   async disconnect(
     @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
     @Param('integrationId') integrationId: string,
   ): Promise<{ disconnected: boolean }> {
     if (!this.registry.get(integrationId)) {
       throw new NotFoundException(`Unknown integration: ${integrationId}`);
     }
-    await this.oauthService.disconnect(user.id, integrationId);
+    await this.oauthService.disconnect(user.id, workspace.id, integrationId);
     return { disconnected: true };
   }
 }

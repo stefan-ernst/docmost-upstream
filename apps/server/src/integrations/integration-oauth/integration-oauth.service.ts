@@ -1,19 +1,19 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
-import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   encryptString,
   decryptString,
 } from '../../common/helpers/encryption.helper';
 import { EnvironmentService } from '../environment/environment.service';
-import {
-  IntegrationManifest,
-  resolveBaseUrl,
-} from './manifest.types';
+import { IntegrationManifest } from './manifest.types';
 import { IntegrationOAuthRegistry } from './manifest.registry';
 import { IntegrationOAuthTokenRepo } from './integration-oauth-token.repo';
+import {
+  IntegrationOAuthConnectionService,
+  ResolvedIntegrationOAuthConnection,
+} from './integration-oauth-connection.service';
 
 const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const STATE_PREFIX = 'integration-oauth:state:';
@@ -21,6 +21,7 @@ const TOKEN_ENCRYPTION_INFO = 'integration-oauth-token-v1';
 
 interface OAuthState {
   userId: string;
+  workspaceId: string;
   integrationId: string;
   codeVerifier?: string;
   returnTo?: string;
@@ -49,23 +50,27 @@ export class IntegrationOAuthService {
   constructor(
     private readonly registry: IntegrationOAuthRegistry,
     private readonly tokenRepo: IntegrationOAuthTokenRepo,
+    private readonly connectionService: IntegrationOAuthConnectionService,
     private readonly environmentService: EnvironmentService,
-    private readonly configService: ConfigService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   /** Builds the authorize redirect URL and stashes one-shot state in Redis. */
   async startAuthorize(args: {
     integrationId: string;
+    workspaceId: string;
     userId: string;
     returnTo?: string;
   }): Promise<{ url: string }> {
     const manifest = this.registry.require(args.integrationId);
-    const clientId = this.requireClientId(manifest);
+    const connection = await this.connectionService.requireEnabled(
+      args.workspaceId,
+      args.integrationId,
+    );
 
     const stateToken = randomBytes(32).toString('hex');
     const params: Record<string, string> = {
-      client_id: clientId,
+      client_id: connection.oauthClientId,
       redirect_uri: this.callbackUrl(manifest.id),
       response_type: 'code',
       scope: manifest.scopes.join(manifest.scopeSeparator ?? ' '),
@@ -76,20 +81,23 @@ export class IntegrationOAuthService {
     let codeVerifier: string | undefined;
     if (manifest.pkce) {
       codeVerifier = randomBytes(32).toString('base64url');
-      const challenge = createHash('sha256').update(codeVerifier).digest('base64url');
+      const challenge = createHash('sha256')
+        .update(codeVerifier)
+        .digest('base64url');
       params.code_challenge = challenge;
       params.code_challenge_method = 'S256';
     }
 
     const stateValue: OAuthState = {
       userId: args.userId,
+      workspaceId: args.workspaceId,
       integrationId: manifest.id,
       codeVerifier,
       returnTo: args.returnTo,
     };
     await this.cache.set(STATE_PREFIX + stateToken, stateValue, STATE_TTL_MS);
 
-    const url = `${resolveBaseUrl(manifest)}${manifest.authorizePath}?${new URLSearchParams(params).toString()}`;
+    const url = `${connection.baseUrl}${manifest.authorizePath}?${new URLSearchParams(params).toString()}`;
     return { url };
   }
 
@@ -98,7 +106,7 @@ export class IntegrationOAuthService {
     integrationId: string;
     code: string;
     stateToken: string;
-  }): Promise<{ userId: string; returnTo?: string }> {
+  }): Promise<{ userId: string; workspaceId: string; returnTo?: string }> {
     const stateKey = STATE_PREFIX + args.stateToken;
     const state = (await this.cache.get<OAuthState>(stateKey)) ?? null;
     if (!state) {
@@ -112,20 +120,54 @@ export class IntegrationOAuthService {
     }
 
     const manifest = this.registry.require(args.integrationId);
-    const tokens = await this.exchangeCodeForTokens(manifest, args.code, state.codeVerifier);
-    await this.persistTokens(state.userId, manifest.id, tokens);
-    return { userId: state.userId, returnTo: state.returnTo };
+    const connection = await this.connectionService.requireEnabled(
+      state.workspaceId,
+      args.integrationId,
+    );
+    const tokens = await this.exchangeCodeForTokens(
+      manifest,
+      connection,
+      args.code,
+      state.codeVerifier,
+    );
+    await this.persistTokens(
+      state.userId,
+      state.workspaceId,
+      manifest.id,
+      tokens,
+    );
+    return {
+      userId: state.userId,
+      workspaceId: state.workspaceId,
+      returnTo: state.returnTo,
+    };
   }
 
-  /** Decrypted tokens for the user/integration pair, or null if not connected. */
-  async getTokens(userId: string, integrationId: string): Promise<DecryptedTokens | null> {
-    const row = await this.tokenRepo.findByUserAndIntegration(userId, integrationId);
+  /** Decrypted tokens for the user/workspace/integration tuple, or null if not connected. */
+  async getTokens(
+    userId: string,
+    workspaceId: string,
+    integrationId: string,
+  ): Promise<DecryptedTokens | null> {
+    const row = await this.tokenRepo.findByUserWorkspaceAndIntegration(
+      userId,
+      workspaceId,
+      integrationId,
+    );
     if (!row) return null;
     const secret = this.environmentService.getAppSecret();
     return {
-      accessToken: decryptString(row.accessTokenEncrypted, secret, TOKEN_ENCRYPTION_INFO),
+      accessToken: decryptString(
+        row.accessTokenEncrypted,
+        secret,
+        TOKEN_ENCRYPTION_INFO,
+      ),
       refreshToken: row.refreshTokenEncrypted
-        ? decryptString(row.refreshTokenEncrypted, secret, TOKEN_ENCRYPTION_INFO)
+        ? decryptString(
+            row.refreshTokenEncrypted,
+            secret,
+            TOKEN_ENCRYPTION_INFO,
+          )
         : undefined,
       expiresAt: row.expiresAt ? new Date(row.expiresAt) : undefined,
       scopes: row.scopes,
@@ -134,68 +176,90 @@ export class IntegrationOAuthService {
   }
 
   /** RFC 6749 refresh-token grant. Throws on rejection — caller marks needs-reconnect. */
-  async refreshTokens(userId: string, integrationId: string): Promise<DecryptedTokens> {
-    const current = await this.getTokens(userId, integrationId);
+  async refreshTokens(
+    userId: string,
+    workspaceId: string,
+    integrationId: string,
+  ): Promise<DecryptedTokens> {
+    const current = await this.getTokens(userId, workspaceId, integrationId);
     if (!current?.refreshToken) {
       throw new Error('No refresh token stored for this connection');
     }
 
     const manifest = this.registry.require(integrationId);
-    const clientId = this.requireClientId(manifest);
-    const clientSecret = this.maybeClientSecret(manifest);
-
+    const connection = await this.connectionService.requireEnabled(
+      workspaceId,
+      integrationId,
+    );
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: current.refreshToken,
-      client_id: clientId,
+      client_id: connection.oauthClientId,
     });
-    if (clientSecret) body.set('client_secret', clientSecret);
+    if (connection.oauthClientSecret)
+      body.set('client_secret', connection.oauthClientSecret);
 
-    const resp = await fetch(`${resolveBaseUrl(manifest)}${manifest.tokenPath}`, {
+    const resp = await fetch(`${connection.baseUrl}${manifest.tokenPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
-      throw new Error(`Refresh token exchange failed (${resp.status}): ${text}`);
+      throw new Error(
+        `Refresh token exchange failed (${resp.status}): ${text}`,
+      );
     }
     const tokens = (await resp.json()) as TokenResponse;
-    await this.persistTokens(userId, integrationId, tokens, current.refreshToken);
-    return (await this.getTokens(userId, integrationId))!;
+    await this.persistTokens(
+      userId,
+      workspaceId,
+      integrationId,
+      tokens,
+      current.refreshToken,
+    );
+    return (await this.getTokens(userId, workspaceId, integrationId))!;
   }
 
-  async markNeedsReconnect(userId: string, integrationId: string): Promise<void> {
-    await this.tokenRepo.markNeedsReconnect(userId, integrationId);
+  async markNeedsReconnect(
+    userId: string,
+    workspaceId: string,
+    integrationId: string,
+  ): Promise<void> {
+    await this.tokenRepo.markNeedsReconnect(userId, workspaceId, integrationId);
   }
 
-  async disconnect(userId: string, integrationId: string): Promise<void> {
-    await this.tokenRepo.delete(userId, integrationId);
+  async disconnect(
+    userId: string,
+    workspaceId: string,
+    integrationId: string,
+  ): Promise<void> {
+    await this.tokenRepo.delete(userId, workspaceId, integrationId);
   }
 
   callbackUrl(integrationId: string): string {
-    return `${this.environmentService.getAppUrl()}/api/integrations/oauth/${integrationId}/callback`;
+    return this.connectionService.callbackUrl(integrationId);
   }
 
   // ---- internals ----
 
   private async exchangeCodeForTokens(
     manifest: IntegrationManifest,
+    connection: ResolvedIntegrationOAuthConnection,
     code: string,
     codeVerifier?: string,
   ): Promise<TokenResponse> {
-    const clientId = this.requireClientId(manifest);
-    const clientSecret = this.maybeClientSecret(manifest);
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: this.callbackUrl(manifest.id),
-      client_id: clientId,
+      client_id: connection.oauthClientId,
     });
-    if (clientSecret) body.set('client_secret', clientSecret);
+    if (connection.oauthClientSecret)
+      body.set('client_secret', connection.oauthClientSecret);
     if (codeVerifier) body.set('code_verifier', codeVerifier);
 
-    const resp = await fetch(`${resolveBaseUrl(manifest)}${manifest.tokenPath}`, {
+    const resp = await fetch(`${connection.baseUrl}${manifest.tokenPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -209,6 +273,7 @@ export class IntegrationOAuthService {
 
   private async persistTokens(
     userId: string,
+    workspaceId: string,
     integrationId: string,
     tokens: TokenResponse,
     fallbackRefreshToken?: string,
@@ -227,8 +292,13 @@ export class IntegrationOAuthService {
 
     await this.tokenRepo.upsert({
       userId,
+      workspaceId,
       integrationId,
-      accessTokenEncrypted: encryptString(tokens.access_token, secret, TOKEN_ENCRYPTION_INFO),
+      accessTokenEncrypted: encryptString(
+        tokens.access_token,
+        secret,
+        TOKEN_ENCRYPTION_INFO,
+      ),
       refreshTokenEncrypted: refreshToken
         ? encryptString(refreshToken, secret, TOKEN_ENCRYPTION_INFO)
         : null,
@@ -236,20 +306,5 @@ export class IntegrationOAuthService {
       scopes: tokens.scope ?? '',
       needsReconnect: false,
     });
-  }
-
-  private requireClientId(manifest: IntegrationManifest): string {
-    const v = this.configService.get<string>(manifest.clientIdEnv);
-    if (!v) {
-      throw new Error(
-        `Missing OAuth client_id env var ${manifest.clientIdEnv} for integration ${manifest.id}`,
-      );
-    }
-    return v;
-  }
-
-  private maybeClientSecret(manifest: IntegrationManifest): string | undefined {
-    if (!manifest.clientSecretEnv) return undefined;
-    return this.configService.get<string>(manifest.clientSecretEnv) || undefined;
   }
 }

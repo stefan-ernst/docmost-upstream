@@ -56,18 +56,29 @@ export default function IntegrationsList() {
   );
 }
 
-function IntegrationCard({ integration }: { integration: IntegrationListItem }) {
+function IntegrationCard({
+  integration,
+}: {
+  integration: IntegrationListItem;
+}) {
   const { t } = useTranslation();
   const disconnect = useDisconnectIntegrationMutation();
 
   const onConnect = () => {
     // Top-level navigation — provider redirects back into our window.
-    window.location.href = authorizeUrl(integration.id, "/settings/account/integrations");
+    window.location.href = authorizeUrl(
+      integration.id,
+      "/settings/account/integrations",
+    );
   };
 
   const onDisconnect = () => {
     disconnect.mutate({ integrationId: integration.id });
   };
+
+  const connectLabel = t("Connect your {{integration}} account", {
+    integration: integration.name,
+  });
 
   return (
     <Card withBorder padding="lg" radius="md">
@@ -118,7 +129,7 @@ function IntegrationCard({ integration }: { integration: IntegrationListItem }) 
               </Button>
             </>
           ) : (
-            <Button onClick={onConnect}>{t("Connect")}</Button>
+            <Button onClick={onConnect}>{connectLabel}</Button>
           )}
         </Group>
       </Group>

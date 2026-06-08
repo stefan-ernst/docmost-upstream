@@ -60,6 +60,7 @@ export type IntegrationResolvedResource =
 
 export interface IntegrationResourceContext {
   integrationId: string;
+  workspaceId: string;
   userId: string;
   client: IntegrationOAuthClientService;
 }

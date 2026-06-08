@@ -2,7 +2,10 @@ import { IntegrationManifest } from '../integration-oauth/manifest.types';
 import { WINDSHIFT_RESOURCES } from './windshift.resources';
 
 /**
- * One windshift host per docmost deployment (WINDSHIFT_BASE_URL).
+ * Windshift provider definition. A workspace admin supplies the base connection
+ * through Settings → Workspace integrations, or the deployment can provide
+ * WINDSHIFT_* env defaults. Either way, users authorize their own Windshift
+ * accounts; the admin setup is not a shared bearer token.
  *
  * The redirect URI registered in windshift's oauth_clients row must equal
  * `${APP_URL}/api/integrations/oauth/windshift/callback`.
@@ -10,7 +13,8 @@ import { WINDSHIFT_RESOURCES } from './windshift.resources';
 export const WINDSHIFT_MANIFEST: IntegrationManifest = {
   id: 'windshift',
   name: 'Windshift',
-  description: 'Embed live windshift items and collection reports in docmost pages.',
+  description:
+    'Embed live windshift items and collection reports in docmost pages.',
   baseUrl: () => process.env.WINDSHIFT_BASE_URL ?? '',
   authorizePath: '/oauth/authorize',
   tokenPath: '/api/oauth/token',

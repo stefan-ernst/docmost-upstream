@@ -428,9 +428,25 @@ export interface ScimTokens {
   workspaceId: string;
 }
 
+export interface IntegrationOauthConnections {
+  id: Generated<string>;
+  workspaceId: string;
+  integrationId: string;
+  enabled: Generated<boolean>;
+  baseUrl: string;
+  oauthClientId: string;
+  oauthClientSecretEncrypted: string | null;
+  defaultWorkspaceKey: string | null;
+  createdById: string | null;
+  updatedById: string | null;
+  createdAt: Generated<Timestamp>;
+  updatedAt: Generated<Timestamp>;
+}
+
 export interface IntegrationOauthTokens {
   id: Generated<string>;
   userId: string;
+  workspaceId: string;
   integrationId: string;
   accessTokenEncrypted: string;
   refreshTokenEncrypted: string | null;
@@ -590,6 +606,7 @@ export interface DB {
   pageVerifiers: PageVerifiers;
   pages: Pages;
   scimTokens: ScimTokens;
+  integrationOauthConnections: IntegrationOauthConnections;
   integrationOauthTokens: IntegrationOauthTokens;
   shares: Shares;
   spaceMembers: SpaceMembers;

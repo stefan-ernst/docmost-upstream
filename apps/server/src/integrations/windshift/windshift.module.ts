@@ -3,9 +3,9 @@ import { IntegrationOAuthRegistry } from '../integration-oauth/manifest.registry
 import { WINDSHIFT_MANIFEST } from './windshift.manifest';
 
 /**
- * Registers the manifest at boot only when WINDSHIFT_BASE_URL is set —
- * unset means windshift won't show up in /api/integrations/oauth, so the
- * frontend's slash-menu entries hide automatically.
+ * Registers the Windshift provider manifest at boot. User-facing resource and
+ * OAuth lists still hide it until a workspace admin configures a base
+ * connection (or legacy WINDSHIFT_* env vars provide one).
  */
 @Injectable()
 class WindshiftRegistration implements OnModuleInit {
@@ -14,13 +14,8 @@ class WindshiftRegistration implements OnModuleInit {
   constructor(private readonly registry: IntegrationOAuthRegistry) {}
 
   onModuleInit(): void {
-    if (!process.env.WINDSHIFT_BASE_URL) {
-      this.logger.log(
-        'WINDSHIFT_BASE_URL not set — skipping windshift integration registration',
-      );
-      return;
-    }
     this.registry.register(WINDSHIFT_MANIFEST);
+    this.logger.log('Registered windshift integration provider');
   }
 }
 

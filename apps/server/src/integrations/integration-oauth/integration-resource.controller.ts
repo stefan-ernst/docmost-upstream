@@ -11,10 +11,12 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
-import { User } from '@docmost/db/types/entity.types';
+import { AuthWorkspace } from '../../common/decorators/auth-workspace.decorator';
+import { User, Workspace } from '@docmost/db/types/entity.types';
 import { IntegrationOAuthRegistry } from './manifest.registry';
 import {
   IntegrationOAuthClientService,
+  IntegrationNotConfiguredError,
   IntegrationNotConnectedError,
   IntegrationReconnectRequiredError,
 } from './integration-oauth-client.service';
@@ -38,6 +40,7 @@ export class IntegrationResourceController {
   @Get('search')
   async search(
     @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
     @Param('integrationId') integrationId: string,
     @Param('resourceId') resourceId: string,
     @Query('q') q: string | undefined,
@@ -48,10 +51,18 @@ export class IntegrationResourceController {
 
     const parsedLimit = limit ? Number.parseInt(limit, 10) : undefined;
     const items = await this.wrap(integrationId, resourceId, () =>
-      resource.search!({ integrationId, userId: user.id, client: this.clientService }, {
-        q,
-        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
-      }),
+      resource.search!(
+        {
+          integrationId,
+          workspaceId: workspace.id,
+          userId: user.id,
+          client: this.clientService,
+        },
+        {
+          q,
+          limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        },
+      ),
     );
     return { items };
   }
@@ -59,6 +70,7 @@ export class IntegrationResourceController {
   @Get('resolve')
   async resolve(
     @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
     @Param('integrationId') integrationId: string,
     @Param('resourceId') resourceId: string,
     @Query('key') key: string | undefined,
@@ -67,7 +79,10 @@ export class IntegrationResourceController {
     const resource = this.requireResource(integrationId, resourceId);
     if (!key) {
       throw new HttpException(
-        { code: 'INTEGRATION_RESOURCE_BAD_REQUEST', message: 'Missing resource key' },
+        {
+          code: 'INTEGRATION_RESOURCE_BAD_REQUEST',
+          message: 'Missing resource key',
+        },
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -75,7 +90,12 @@ export class IntegrationResourceController {
     const params = this.parseParams(paramsJson);
     return this.wrap(integrationId, resourceId, () =>
       resource.resolve(
-        { integrationId, userId: user.id, client: this.clientService },
+        {
+          integrationId,
+          workspaceId: workspace.id,
+          userId: user.id,
+          client: this.clientService,
+        },
         { resourceKey: key, params },
       ),
     );
@@ -95,7 +115,9 @@ export class IntegrationResourceController {
     return resource;
   }
 
-  private parseParams(paramsJson: string | undefined): Record<string, unknown> | undefined {
+  private parseParams(
+    paramsJson: string | undefined,
+  ): Record<string, unknown> | undefined {
     if (!paramsJson) return undefined;
     try {
       const parsed = JSON.parse(paramsJson) as unknown;
@@ -106,7 +128,10 @@ export class IntegrationResourceController {
       // handled below
     }
     throw new HttpException(
-      { code: 'INTEGRATION_RESOURCE_BAD_REQUEST', message: 'Invalid params JSON' },
+      {
+        code: 'INTEGRATION_RESOURCE_BAD_REQUEST',
+        message: 'Invalid params JSON',
+      },
       HttpStatus.BAD_REQUEST,
     );
   }
@@ -119,6 +144,15 @@ export class IntegrationResourceController {
     try {
       return await call();
     } catch (err) {
+      if (err instanceof IntegrationNotConfiguredError) {
+        throw new HttpException(
+          {
+            code: 'INTEGRATION_NOT_CONFIGURED',
+            message: `Ask a workspace admin to configure ${integrationId}`,
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
       if (err instanceof IntegrationNotConnectedError) {
         throw new HttpException(
           {
@@ -141,7 +175,11 @@ export class IntegrationResourceController {
       const status = (err as { status?: number }).status;
       if (typeof status === 'number' && status >= 400 && status < 600) {
         throw new HttpException(
-          { code: 'INTEGRATION_PROVIDER_HTTP_ERROR', status, message: (err as Error).message },
+          {
+            code: 'INTEGRATION_PROVIDER_HTTP_ERROR',
+            status,
+            message: (err as Error).message,
+          },
           status,
         );
       }
@@ -150,7 +188,10 @@ export class IntegrationResourceController {
         `Integration resource failed integration=${integrationId} resource=${resourceId}: ${(err as Error).message}`,
       );
       throw new HttpException(
-        { code: 'INTEGRATION_RESOURCE_ERROR', message: 'Integration resource failed' },
+        {
+          code: 'INTEGRATION_RESOURCE_ERROR',
+          message: 'Integration resource failed',
+        },
         HttpStatus.BAD_GATEWAY,
       );
     }

@@ -30,6 +30,7 @@ import {
   UserSessions,
   ApiKeys,
   ScimTokens,
+  IntegrationOauthConnections,
   IntegrationOauthTokens,
   Watchers,
   Audit as _Audit,
@@ -47,10 +48,7 @@ export type UpdatableAiChat = Updateable<Omit<AiChats, 'id'>>;
 // full-text search. It is omitted from the public type so it never leaks
 // into HTTP responses or the chat history fed to the language model.
 export type AiChatMessage = Omit<Selectable<AiChatMessages>, 'tsv'>;
-export type InsertableAiChatMessage = Omit<
-  Insertable<AiChatMessages>,
-  'tsv'
->;
+export type InsertableAiChatMessage = Omit<Insertable<AiChatMessages>, 'tsv'>;
 
 // Workspace
 export type Workspace = Selectable<Workspaces>;
@@ -166,9 +164,19 @@ export type ScimToken = Selectable<ScimTokens>;
 export type InsertableScimToken = Insertable<ScimTokens>;
 export type UpdatableScimToken = Updateable<Omit<ScimTokens, 'id'>>;
 
+// Integration OAuth Connections
+export type IntegrationOauthConnection =
+  Selectable<IntegrationOauthConnections>;
+export type InsertableIntegrationOauthConnection =
+  Insertable<IntegrationOauthConnections>;
+export type UpdatableIntegrationOauthConnection = Updateable<
+  Omit<IntegrationOauthConnections, 'id'>
+>;
+
 // Integration OAuth Tokens
 export type IntegrationOauthToken = Selectable<IntegrationOauthTokens>;
-export type InsertableIntegrationOauthToken = Insertable<IntegrationOauthTokens>;
+export type InsertableIntegrationOauthToken =
+  Insertable<IntegrationOauthTokens>;
 export type UpdatableIntegrationOauthToken = Updateable<
   Omit<IntegrationOauthTokens, 'id'>
 >;
@@ -201,7 +209,9 @@ export type UpdatablePagePermission = Updateable<Omit<_PagePermissions, 'id'>>;
 // Page Verification
 export type PageVerification = Selectable<_PageVerifications>;
 export type InsertablePageVerification = Insertable<_PageVerifications>;
-export type UpdatablePageVerification = Updateable<Omit<_PageVerifications, 'id'>>;
+export type UpdatablePageVerification = Updateable<
+  Omit<_PageVerifications, 'id'>
+>;
 
 // Page Verifier
 export type PageVerifier = Selectable<_PageVerifiers>;

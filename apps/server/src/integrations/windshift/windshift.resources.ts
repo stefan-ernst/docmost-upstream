@@ -24,8 +24,8 @@ interface WindshiftCollection {
   description?: string;
 }
 
-function windshiftUrl(path: string): string | undefined {
-  const base = (process.env.WINDSHIFT_BASE_URL ?? '').replace(/\/+$/, '');
+function windshiftUrl(baseUrl: string, path: string): string | undefined {
+  const base = baseUrl.replace(/\/+$/, '');
   if (!base) return undefined;
   return `${base}${path}`;
 }
@@ -34,16 +34,22 @@ function itemKey(item: WindshiftItem): string {
   return item.key || `${item.workspace_key}-${item.workspace_item_number}`;
 }
 
-function itemUrl(item: WindshiftItem): string | undefined {
-  return windshiftUrl(`/workspaces/${item.workspace_id}/items/${item.id}`);
+function itemUrl(baseUrl: string, item: WindshiftItem): string | undefined {
+  return windshiftUrl(
+    baseUrl,
+    `/workspaces/${item.workspace_id}/items/${item.id}`,
+  );
 }
 
-function normalizeItemCard(item: WindshiftItem): IntegrationItemCardPayload {
+function normalizeItemCard(
+  baseUrl: string,
+  item: WindshiftItem,
+): IntegrationItemCardPayload {
   return {
     kind: 'item-card',
     key: itemKey(item),
     title: item.title,
-    url: itemUrl(item),
+    url: itemUrl(baseUrl, item),
     status: item.status?.name,
     priority: item.priority?.name,
     assignee: item.assignee?.full_name ?? item.assignee?.email,
@@ -56,7 +62,9 @@ function normalizeItemCard(item: WindshiftItem): IntegrationItemCardPayload {
   };
 }
 
-function normalizeItemSearch(item: WindshiftItem): IntegrationResourceSearchResult {
+function normalizeItemSearch(
+  item: WindshiftItem,
+): IntegrationResourceSearchResult {
   return {
     key: itemKey(item),
     title: item.title,
@@ -69,7 +77,9 @@ function normalizeItemSearch(item: WindshiftItem): IntegrationResourceSearchResu
   };
 }
 
-function parseItemKey(raw: string): { workspaceKey: string; itemNumber: number } | null {
+function parseItemKey(
+  raw: string,
+): { workspaceKey: string; itemNumber: number } | null {
   const match = raw.trim().match(/^([A-Za-z][A-Za-z0-9]*)[-_\s]?(\d+)$/);
   if (!match) return null;
   return {
@@ -123,6 +133,7 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
 
       const body = await ctx.client.get<{ data?: WindshiftItem[] }>(
         ctx.integrationId,
+        ctx.workspaceId,
         ctx.userId,
         '/rest/api/v1/search/items',
         { q, limit: args.limit ?? 10 },
@@ -137,6 +148,7 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
       if (idHint && Number.isFinite(idHint)) {
         item = await ctx.client.get<WindshiftItem>(
           ctx.integrationId,
+          ctx.workspaceId,
           ctx.userId,
           `/rest/api/v1/items/${encodeURIComponent(String(idHint))}`,
         );
@@ -149,11 +161,16 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
         }
         item = await ctx.client.get<WindshiftItem>(
           ctx.integrationId,
+          ctx.workspaceId,
           ctx.userId,
           `/rest/api/v1/workspaces/${encodeURIComponent(parsed.workspaceKey)}/items/${encodeURIComponent(String(parsed.itemNumber))}`,
         );
       }
-      return normalizeItemCard(item);
+      const baseUrl = await ctx.client.baseUrl(
+        ctx.integrationId,
+        ctx.workspaceId,
+      );
+      return normalizeItemCard(baseUrl, item);
     },
   },
   {
@@ -188,8 +205,12 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
         limit: args.limit ?? 10,
       };
       if (args.q) query.q = args.q;
-      const body = await ctx.client.get<{ items?: WindshiftCollection[]; data?: WindshiftCollection[] }>(
+      const body = await ctx.client.get<{
+        items?: WindshiftCollection[];
+        data?: WindshiftCollection[];
+      }>(
         ctx.integrationId,
+        ctx.workspaceId,
         ctx.userId,
         '/rest/api/v1/collections',
         query,
@@ -205,6 +226,7 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
       const key = args.resourceKey;
       const collection = await ctx.client.get<WindshiftCollection>(
         ctx.integrationId,
+        ctx.workspaceId,
         ctx.userId,
         `/rest/api/v1/collections/${encodeURIComponent(key)}`,
       );
@@ -213,11 +235,16 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
         pagination?: { total?: number; [key: string]: unknown };
       }>(
         ctx.integrationId,
+        ctx.workspaceId,
         ctx.userId,
         `/rest/api/v1/collections/${encodeURIComponent(key)}/items`,
         { limit: 50 },
       );
       const rows = body.data ?? [];
+      const baseUrl = await ctx.client.baseUrl(
+        ctx.integrationId,
+        ctx.workspaceId,
+      );
       const payload: IntegrationTableReportPayload = {
         kind: 'table-report',
         title: collection.name,
@@ -228,7 +255,7 @@ export const WINDSHIFT_RESOURCES: IntegrationResourceManifest[] = [
           id: String(item.id),
           key: itemKey(item),
           title: item.title,
-          url: itemUrl(item),
+          url: itemUrl(baseUrl, item),
           status: item.status?.name,
           assignee: item.assignee?.full_name ?? item.assignee?.email,
         })),
